@@ -1,0 +1,33 @@
+Third-party software notices
+============================
+
+Project-authored source, documentation, and build scripts are licensed under
+GPL-3.0-only. See LICENSE. Third-party materials retain their own licenses.
+
+mGBA
+----
+This product includes software developed as mGBA
+(https://github.com/mgba-emu/mgba).
+
+mGBA is licensed under the Mozilla Public License, v. 2.0.
+You may obtain a copy of the license at https://www.mozilla.org/MPL/2.0/
+
+Corresponding source for the bundled mGBA version lives under:
+  native/mgba/
+
+If you distribute binaries of this application, provide corresponding source
+for the GPL-covered application and the MPL-covered mGBA files as required by
+their licenses. Preserve notices in the vendored mGBA tree.
+
+Nunito
+------
+The bundled font at assets/fonts/Nunito.ttf is licensed under the SIL Open
+Font License 1.1. Its copyright and full license text are in
+assets/fonts/OFL.txt.
+
+Other vendored materials
+------------------------
+The mGBA source tree contains third-party code and its notices. These remain
+under the licenses included with those files, including
+native/mgba/res/licenses/ and native/mgba/src/third-party/. The optional
+upstream cinema test ROMs are not bundled in this repository.
