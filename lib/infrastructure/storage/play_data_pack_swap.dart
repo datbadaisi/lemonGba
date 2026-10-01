@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:path/path.dart' as p;
@@ -14,13 +15,25 @@ final class PlayDataPackSwap {
   PlayDataPackSwap(this.paths);
 
   final SavePaths paths;
+  Future<void>? _initialRecovery;
 
   /// Boot / construct recovery for mid-swap crashes.
-  Future<void> recoverInterruptedSwaps() async {
+  Future<void> recoverInterruptedSwaps() =>
+      _initialRecovery ??= _recoverInterruptedSwaps();
+
+  Future<void> _recoverInterruptedSwaps() async {
     await paths.ensureDirs();
 
     final statesRoot = paths.statesDir;
     if (await statesRoot.exists()) {
+      await for (final entity in statesRoot.list(followLinks: false)) {
+        if (entity is! File || !entity.path.endsWith('.pack_swap.json')) {
+          continue;
+        }
+        final name = p.basename(entity.path);
+        final id = name.substring(0, name.length - '.pack_swap.json'.length);
+        await _rollback(id, entity);
+      }
       await for (final entity in statesRoot.list(followLinks: false)) {
         if (entity is! Directory) continue;
         final name = p.basename(entity.path);
@@ -67,12 +80,54 @@ final class PlayDataPackSwap {
     }
   }
 
+  File _markerFor(String gameId) =>
+      File(p.join(paths.statesDir.path, '$gameId.pack_swap.json'));
+
+  Future<void> _rollback(String gameId, File marker) async {
+    final data = jsonDecode(await marker.readAsString());
+    if (data is! Map || data['hadStates'] is! bool || data['hadSav'] is! bool) {
+      throw const GamePackException(
+        GamePackErrorCode.ioFailure,
+        'Invalid interrupted pack swap marker',
+      );
+    }
+
+    final liveStates = Directory(paths.stateDirForGame(gameId));
+    final bakStates = Directory('${liveStates.path}.bak');
+    final liveSav = File(paths.savPathForGame(gameId));
+    final bakSav = File('${liveSav.path}.bak');
+
+    if (await bakStates.exists()) {
+      if (await liveStates.exists()) await liveStates.delete(recursive: true);
+      await bakStates.rename(liveStates.path);
+    } else if (data['hadStates'] == false && await liveStates.exists()) {
+      await liveStates.delete(recursive: true);
+    }
+    if (await bakSav.exists()) {
+      if (await liveSav.exists()) await liveSav.delete();
+      await bakSav.rename(liveSav.path);
+    } else if (data['hadSav'] == false && await liveSav.exists()) {
+      await liveSav.delete();
+    }
+
+    await PackZipIo.deleteDirQuietly(Directory('${liveStates.path}.importing'));
+    await PackZipIo.deleteFileQuietly(File('${liveSav.path}.importing'));
+    await PackZipIo.deleteFileQuietly(
+      File('${liveSav.path}.importing.tombstone'),
+    );
+    await marker.delete();
+  }
+
   /// Apply play data from a staged single-game tree (`saves/`, `states/`).
   Future<void> applyFromStage({
     required String gameId,
     required Directory stageDir,
   }) async {
+    await recoverInterruptedSwaps();
     await paths.ensureDirs();
+
+    final interrupted = _markerFor(gameId);
+    if (await interrupted.exists()) await _rollback(gameId, interrupted);
 
     final liveStates = Directory(paths.stateDirForGame(gameId));
     final importingStates = Directory('${liveStates.path}.importing');
@@ -82,6 +137,7 @@ final class PlayDataPackSwap {
     final importingSav = File('${liveSav.path}.importing');
     final tombstone = File('${liveSav.path}.importing.tombstone');
     final bakSav = File('${liveSav.path}.bak');
+    final marker = _markerFor(gameId);
 
     await PackZipIo.deleteDirQuietly(importingStates);
     await PackZipIo.deleteFileQuietly(importingSav);
@@ -116,6 +172,15 @@ final class PlayDataPackSwap {
           'Invalid cartridge staging',
         );
       }
+
+      final hadStates = await liveStates.exists();
+      final hadSav = await liveSav.exists();
+      final markerTemp = File('${marker.path}.tmp');
+      await markerTemp.writeAsString(
+        jsonEncode({'hadStates': hadStates, 'hadSav': hadSav}),
+        flush: true,
+      );
+      await markerTemp.rename(marker.path);
 
       if (await bakStates.exists()) {
         await PackZipIo.deleteDirQuietly(bakStates);
@@ -157,9 +222,7 @@ final class PlayDataPackSwap {
           await tombstone.delete();
         }
       } catch (e) {
-        if (savMovedToBak &&
-            !await liveSav.exists() &&
-            await bakSav.exists()) {
+        if (savMovedToBak && !await liveSav.exists() && await bakSav.exists()) {
           try {
             await bakSav.rename(liveSav.path);
           } catch (_) {}
@@ -170,14 +233,21 @@ final class PlayDataPackSwap {
         );
       }
 
+      // Removing the marker commits the pair. Backups are disposable only
+      // after this point; boot recovery rolls both resources back otherwise.
+      await marker.delete();
       await PackZipIo.deleteDirQuietly(bakStates);
       await PackZipIo.deleteFileQuietly(bakSav);
       await PackZipIo.deleteFileQuietly(importingSav);
       await PackZipIo.deleteFileQuietly(tombstone);
     } catch (e) {
-      await PackZipIo.deleteDirQuietly(importingStates);
-      await PackZipIo.deleteFileQuietly(importingSav);
-      await PackZipIo.deleteFileQuietly(tombstone);
+      if (await marker.exists()) {
+        await _rollback(gameId, marker);
+      } else {
+        await PackZipIo.deleteDirQuietly(importingStates);
+        await PackZipIo.deleteFileQuietly(importingSav);
+        await PackZipIo.deleteFileQuietly(tombstone);
+      }
       if (e is GamePackException) rethrow;
       throw GamePackException(GamePackErrorCode.ioFailure, e.toString());
     }

@@ -73,8 +73,7 @@ abstract class GameLibraryBase extends ChangeNotifier {
     } catch (_) {}
   }
 
-  static String _safeFileStem(String name) =>
-      safeFileStem(name, maxLength: 48);
+  static String _safeFileStem(String name) => safeFileStem(name, maxLength: 48);
 }
 
 /// Persistent Switch-style game shelf backed by [SavePaths.libraryIndexFile].
@@ -104,35 +103,33 @@ class GameLibrary extends GameLibraryBase
     _artPaintCache.clear();
 
     final file = paths.libraryIndexFile;
-    if (await file.exists()) {
+    // A write may have been interrupted after the old index moved to .bak.
+    // Prefer the live index, then the complete staged index, then the backup.
+    for (final candidate in [
+      file,
+      File('${file.path}.tmp'),
+      File('${file.path}.bak'),
+    ]) {
+      if (!await candidate.exists()) continue;
       try {
-        final raw = await file.readAsString();
-        final decoded = jsonDecode(raw);
-        if (decoded is Map<String, dynamic>) {
-          final list = decoded['games'];
-          if (list is List) {
-            for (final item in list) {
-              if (item is Map<String, dynamic>) {
-                final g = LibraryGame.fromJson(item);
-                if (g.id.isNotEmpty && g.romFileName.isNotEmpty) {
-                  _games.add(g);
-                }
-              } else if (item is Map) {
-                final g = LibraryGame.fromJson(Map<String, dynamic>.from(item));
-                if (g.id.isNotEmpty && g.romFileName.isNotEmpty) {
-                  _games.add(g);
-                }
-              }
-            }
-          }
-          _loadGroupsFromJson(decoded['groups']);
+        final decoded = jsonDecode(await candidate.readAsString());
+        if (decoded is! Map<String, dynamic> || decoded['games'] is! List) {
+          continue;
         }
+        _games.clear();
+        _groups.clear();
+        for (final item in decoded['games'] as List) {
+          if (item is! Map) continue;
+          final g = LibraryGame.fromJson(Map<String, dynamic>.from(item));
+          if (g.id.isNotEmpty && g.romFileName.isNotEmpty) _games.add(g);
+        }
+        _loadGroupsFromJson(decoded['groups']);
+        if (candidate.path != file.path) {
+          await candidate.copy(file.path);
+        }
+        break;
       } catch (_) {
-        // Corrupt index: keep empty catalog; ROMs on disk stay intact.
-        try {
-          final bak = File('${file.path}.bak');
-          await file.copy(bak.path);
-        } catch (_) {}
+        // Try the next complete copy. ROMs remain available as orphans.
       }
     }
 
@@ -207,13 +204,23 @@ class GameLibrary extends GameLibraryBase
     };
     final file = paths.libraryIndexFile;
     final tmp = File('${file.path}.tmp');
+    final backup = File('${file.path}.bak');
     await tmp.writeAsString(
       const JsonEncoder.withIndent('  ').convert(payload),
+      flush: true,
     );
     if (await file.exists()) {
-      await file.delete();
+      if (await backup.exists()) await backup.delete();
+      await file.rename(backup.path);
     }
-    await tmp.rename(file.path);
+    try {
+      await tmp.rename(file.path);
+    } catch (_) {
+      if (!await file.exists() && await backup.exists()) {
+        await backup.rename(file.path);
+      }
+      rethrow;
+    }
   }
 
   /// Extensions we accept as GBA ROMs (no leading dot).

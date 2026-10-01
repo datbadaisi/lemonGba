@@ -21,19 +21,17 @@ import 'save_paths.dart';
 /// **Multi packs** are a flat multi-root archive: one `games/<gameId>/` tree
 /// per title (same layout as a single pack), not nested zip files.
 class ZipGamePackService implements GamePackPort {
-  ZipGamePackService({
-    required this.paths,
-    required this.library,
-  })  : _io = PackZipIo(paths.packsTempDir),
-        _swap = PlayDataPackSwap(paths) {
-    // Best-effort heal of interrupted swaps; never blind-delete *.bak.
-    _swap.recoverInterruptedSwaps().catchError((_) {});
-  }
+  ZipGamePackService({required this.paths, required this.library})
+    : _io = PackZipIo(paths.packsTempDir),
+      _swap = PlayDataPackSwap(paths);
 
   final SavePaths paths;
   final GameLibrary library;
   final PackZipIo _io;
   final PlayDataPackSwap _swap;
+
+  /// Complete crash recovery before the home screen can open a game.
+  Future<void> recoverInterruptedSwaps() => _swap.recoverInterruptedSwaps();
 
   @override
   Future<GamePackExportResult> exportSavePack({
@@ -130,11 +128,7 @@ class ZipGamePackService implements GamePackPort {
           PackZipMember(file: gameManifestTemp, zipPath: '$root/manifest.json'),
         );
 
-        gamesMeta.add({
-          'gameId': gameId,
-          'title': game.title,
-          'root': root,
-        });
+        gamesMeta.add({'gameId': gameId, 'title': game.title, 'root': root});
       }
 
       // Full multi packs embed group folders that touch any selected game
@@ -207,6 +201,7 @@ class ZipGamePackService implements GamePackPort {
 
     final stageDir = await _io.extractZipToStage(zipPath);
     try {
+      await _validateDeclaredFiles(stageDir, parsed.files);
       await _swap.applyFromStage(gameId: expectedGameId, stageDir: stageDir);
       return GamePackImportResult(
         gameId: expectedGameId,
@@ -313,6 +308,16 @@ class ZipGamePackService implements GamePackPort {
             status: MultiGamePackEntryStatus.skipped,
           );
         }
+        final gameMap = await _io.readManifestMapFromDir(gameRoot);
+        final parsed = PackManifest.parseSingle(gameMap);
+        if (parsed.info.kind != GamePackKind.saves ||
+            parsed.info.gameId != entry.gameId) {
+          throw const GamePackException(
+            GamePackErrorCode.corruptEntry,
+            'Save pack tree does not match its game entry',
+          );
+        }
+        await _validateDeclaredFiles(gameRoot, parsed.files);
         await _swap.applyFromStage(gameId: entry.gameId, stageDir: gameRoot);
         return MultiGamePackEntryResult(
           gameId: entry.gameId,
@@ -404,11 +409,42 @@ class ZipGamePackService implements GamePackPort {
 
   // ── Member gathering ─────────────────────────────────────────────────────
 
+  /// An intentionally empty save pack has no declared files. A pack that
+  /// declares a file but omits it must fail before replacing live play data.
+  Future<void> _validateDeclaredFiles(
+    Directory stageDir,
+    List<Map<String, dynamic>> files,
+  ) async {
+    for (final entry in files) {
+      final raw = entry['path'];
+      if (raw is! String || raw.isEmpty) {
+        throw const GamePackException(
+          GamePackErrorCode.corruptEntry,
+          'Invalid file path in pack manifest',
+        );
+      }
+      final rel = raw.replaceAll('\\', '/');
+      final segments = rel.split('/');
+      if (rel.startsWith('/') ||
+          rel.contains(':') ||
+          segments.any((s) => s.isEmpty || s == '.' || s == '..')) {
+        throw const GamePackException(
+          GamePackErrorCode.corruptEntry,
+          'Unsafe file path in pack manifest',
+        );
+      }
+      final file = File(p.join(stageDir.path, rel));
+      if (!await file.exists()) {
+        throw GamePackException(
+          GamePackErrorCode.corruptEntry,
+          'Pack is missing declared file: $rel',
+        );
+      }
+    }
+  }
+
   Future<({List<PackZipMember> members, Map<String, dynamic> manifest})>
-      _gatherSaveMembers({
-    required String gameId,
-    required String title,
-  }) async {
+  _gatherSaveMembers({required String gameId, required String title}) async {
     await paths.ensureDirs();
     await paths.ensureStateDir(gameId);
     await paths.migrateLegacyQuickSaveIfNeeded(gameId);
@@ -439,7 +475,7 @@ class ZipGamePackService implements GamePackPort {
   }
 
   Future<({List<PackZipMember> members, Map<String, dynamic> manifest})>
-      _gatherFullMembers({
+  _gatherFullMembers({
     required String gameId,
     required String title,
     bool includeGroups = true,
@@ -579,6 +615,7 @@ class ZipGamePackService implements GamePackPort {
     required GamePackImportMode mode,
     Object? packGroups,
   }) async {
+    await _validateDeclaredFiles(stageDir, files);
     if (mode != GamePackImportMode.createNew &&
         mode != GamePackImportMode.replaceExisting) {
       throw const GamePackException(
@@ -602,7 +639,8 @@ class ZipGamePackService implements GamePackPort {
       );
     }
 
-    final romRel = PackManifest.findRolePath(files, 'rom') ??
+    final romRel =
+        PackManifest.findRolePath(files, 'rom') ??
         await _findFirstRomInStage(stageDir);
     if (romRel == null) {
       throw const GamePackException(
@@ -634,7 +672,8 @@ class ZipGamePackService implements GamePackPort {
     }
 
     Map<String, dynamic> meta = {};
-    final metaRel = PackManifest.findRolePath(files, 'library_entry') ??
+    final metaRel =
+        PackManifest.findRolePath(files, 'library_entry') ??
         'meta/library_entry.json';
     final metaFile = File(p.join(stageDir.path, metaRel));
     if (await metaFile.exists()) {

@@ -62,8 +62,9 @@ void main() {
     await paths.ensureStateDir(gameId);
     await File(paths.quickStatePathForGame(gameId, 1)).writeAsBytes([9]);
     await File(paths.statePathForGame(gameId, 2)).writeAsBytes([8]);
-    await File(paths.quickRotateMetaPathForGame(gameId))
-        .writeAsString('{"nextSlot": 2, "lastSlot": 1}');
+    await File(
+      paths.quickRotateMetaPathForGame(gameId),
+    ).writeAsString('{"nextSlot": 2, "lastSlot": 1}');
   }
 
   Future<String> seedSecondGame() async {
@@ -100,7 +101,9 @@ void main() {
     );
     expect(
       exported.suggestedFileName,
-      matches(RegExp(r'^Test Game \d{4}-\d{2}-\d{2}_\d{6}\.saves\.lemongba\.zip$')),
+      matches(
+        RegExp(r'^Test Game \d{4}-\d{2}-\d{2}_\d{6}\.saves\.lemongba\.zip$'),
+      ),
     );
     expect(File(exported.tempFilePath).existsSync(), isTrue);
 
@@ -113,14 +116,10 @@ void main() {
     );
     expect(imported.kind, GamePackKind.saves);
     expect(await File(paths.savPathForGame(gameId)).readAsBytes(), [1, 2, 3]);
-    expect(
-      await File(paths.quickStatePathForGame(gameId, 1)).readAsBytes(),
-      [9],
-    );
-    expect(
-      await File(paths.statePathForGame(gameId, 2)).readAsBytes(),
-      [8],
-    );
+    expect(await File(paths.quickStatePathForGame(gameId, 1)).readAsBytes(), [
+      9,
+    ]);
+    expect(await File(paths.statePathForGame(gameId, 2)).readAsBytes(), [8]);
   });
 
   test('wrong game id is rejected', () async {
@@ -143,6 +142,56 @@ void main() {
       ),
     );
   });
+
+  test('pack manifest rejects game ids that can escape save paths', () {
+    expect(
+      () => PackManifest.parseSingle({
+        'format': PackManifest.singleFormat,
+        'version': 1,
+        'kind': 'saves',
+        'gameId': '../other',
+        'files': [],
+      }),
+      throwsA(isA<GamePackException>()),
+    );
+  });
+
+  test(
+    'save pack missing a declared member preserves local play data',
+    () async {
+      await seedGame();
+      final exported = await packs.exportSavePack(
+        gameId: gameId,
+        titleForFileName: 'Test Game',
+      );
+      final archive = ZipDecoder().decodeBytes(
+        await File(exported.tempFilePath).readAsBytes(),
+      );
+      final incomplete = Archive();
+      for (final f in archive.files) {
+        if (f.isFile && f.name != 'saves/cartridge.sav') {
+          incomplete.addFile(ArchiveFile(f.name, f.size, f.content));
+        }
+      }
+      final path = p.join(temp.path, 'incomplete.zip');
+      await File(path).writeAsBytes(ZipEncoder().encode(incomplete));
+
+      await expectLater(
+        packs.importSavePack(zipPath: path, expectedGameId: gameId),
+        throwsA(
+          isA<GamePackException>().having(
+            (e) => e.code,
+            'code',
+            GamePackErrorCode.corruptEntry,
+          ),
+        ),
+      );
+      expect(await File(paths.savPathForGame(gameId)).readAsBytes(), [1, 2, 3]);
+      expect(await File(paths.quickStatePathForGame(gameId, 1)).readAsBytes(), [
+        9,
+      ]);
+    },
+  );
 
   test('empty save pack clears all play data including cartridge', () async {
     await seedGame();
@@ -189,7 +238,9 @@ void main() {
     );
     expect(
       exported.suggestedFileName,
-      matches(RegExp(r'^Test Game \d{4}-\d{2}-\d{2}_\d{6}\.full\.lemongba\.zip$')),
+      matches(
+        RegExp(r'^Test Game \d{4}-\d{2}-\d{2}_\d{6}\.full\.lemongba\.zip$'),
+      ),
     );
 
     await library.remove(gameId);
@@ -216,7 +267,9 @@ void main() {
     expect(
       exported.suggestedFileName,
       matches(
-        RegExp(r'^Multi 2 games \d{4}-\d{2}-\d{2}_\d{6}\.saves\.multi\.lemongba\.zip$'),
+        RegExp(
+          r'^Multi 2 games \d{4}-\d{2}-\d{2}_\d{6}\.saves\.multi\.lemongba\.zip$',
+        ),
       ),
     );
 
@@ -250,7 +303,9 @@ void main() {
     expect(
       exported.suggestedFileName,
       matches(
-        RegExp(r'^Multi 2 games \d{4}-\d{2}-\d{2}_\d{6}\.full\.multi\.lemongba\.zip$'),
+        RegExp(
+          r'^Multi 2 games \d{4}-\d{2}-\d{2}_\d{6}\.full\.multi\.lemongba\.zip$',
+        ),
       ),
     );
 
@@ -397,11 +452,7 @@ void main() {
         'kind': 'saves',
         'exportedAt': DateTime.now().toUtc().toIso8601String(),
         'games': [
-          {
-            'gameId': 'abc',
-            'title': 'x',
-            'root': '../escape',
-          },
+          {'gameId': 'a' * 64, 'title': 'x', 'root': '../escape'},
         ],
       }),
       throwsA(
@@ -474,8 +525,7 @@ void main() {
     final names = library.groups.map((g) => g.name).toSet();
     expect(names, containsAll(['Favorites', 'RPGs']));
 
-    final favRestored =
-        library.groups.firstWhere((g) => g.name == 'Favorites');
+    final favRestored = library.groups.firstWhere((g) => g.name == 'Favorites');
     final rpgsRestored = library.groups.firstWhere((g) => g.name == 'RPGs');
     expect(favRestored.gameIds, [gameId]);
     expect(rpgsRestored.gameIds.toSet(), {gameId, gameId2});
@@ -733,13 +783,7 @@ void main() {
     final out = Archive();
     for (final f in archive) {
       if (f.isFile && f.name == 'games/$gameId2/manifest.json') {
-        out.addFile(
-          ArchiveFile(
-            f.name,
-            2,
-            utf8.encode('{}'),
-          ),
-        );
+        out.addFile(ArchiveFile(f.name, 2, utf8.encode('{}')));
       } else if (f.isFile) {
         out.addFile(ArchiveFile(f.name, f.size, f.content));
       }

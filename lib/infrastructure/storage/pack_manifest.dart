@@ -6,6 +6,7 @@ abstract final class PackManifest {
   static const multiFormat = 'lemongba.multi.pack';
   static const version = 1;
   static const appVersion = '1.0.0+7';
+  static final RegExp _gameIdPattern = RegExp(r'^[0-9a-f]{64}$');
 
   static Map<String, dynamic> buildSingle({
     required GamePackKind kind,
@@ -121,8 +122,9 @@ abstract final class PackManifest {
     return files;
   }
 
-  static ({GamePackInfo info, List<Map<String, dynamic>> files})
-      parseSingle(Map<String, dynamic> map) {
+  static ({GamePackInfo info, List<Map<String, dynamic>> files}) parseSingle(
+    Map<String, dynamic> map,
+  ) {
     if (map['format'] != singleFormat) {
       throw const GamePackException(
         GamePackErrorCode.invalidFormat,
@@ -132,10 +134,18 @@ abstract final class PackManifest {
     final ver = parseVersion(map['version']);
     final kind = parseKind(map['kind'], multi: false);
     final gameId = map['gameId'] as String?;
-    if (gameId == null || gameId.isEmpty) {
+    if (gameId == null || !_gameIdPattern.hasMatch(gameId)) {
       throw const GamePackException(
         GamePackErrorCode.invalidFormat,
-        'Missing gameId',
+        'Invalid gameId',
+      );
+    }
+    final filesRaw = map['files'];
+    if (filesRaw is! List ||
+        filesRaw.any((item) => item is! Map || item['path'] is! String)) {
+      throw const GamePackException(
+        GamePackErrorCode.invalidFormat,
+        'Invalid pack file list',
       );
     }
     return (
@@ -175,7 +185,10 @@ abstract final class PackManifest {
       // Flat multi: `root` is the directory prefix. Legacy nested packs used
       // `pack` (path to a nested zip) — reject those as unsupported.
       final rootRaw = (m['root'] as String?)?.replaceAll('\\', '/');
-      if (gameId == null || gameId.isEmpty || rootRaw == null || rootRaw.isEmpty) {
+      if (gameId == null ||
+          !_gameIdPattern.hasMatch(gameId) ||
+          rootRaw == null ||
+          rootRaw.isEmpty) {
         if (m['pack'] != null) {
           throw const GamePackException(
             GamePackErrorCode.unsupportedVersion,

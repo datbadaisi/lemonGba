@@ -184,6 +184,7 @@ class _CoreBootGateState extends State<_CoreBootGate> {
     final library = GameLibrary(paths, pro: pro);
     await library.load();
     final packs = ZipGamePackService(paths: paths, library: library);
+    await packs.recoverInterruptedSwaps();
     final billing = ProBilling(pro);
     // Start Billing after load — purchase stream + product query + silent restore.
     unawaited(billing.start());
